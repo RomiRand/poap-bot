@@ -31,9 +31,8 @@ async function getGuildEvents(db, server) {
   const now = new Date();
   const res = await db.any(
     "SELECT * FROM events WHERE end_date >= $1::timestamp AND server = $2::text AND is_active = $3",
-    [now, server, true]
+    [now.toUTCString(), server, true]
   );
-
   return res;
 }
 
@@ -75,6 +74,14 @@ async function countClaimedCodes(db, event_id) {
 
   // console.log("countClaimedCodes", res);
   return res;
+}
+
+async function appendFile(db, event_id, url) {
+    const res = await db.none("UPDATE events SET file_url = file_url || ', ' || $1 WHERE id = $2",
+        [url, event_id]
+    );
+
+    return res;
 }
 
 async function getEventFromPass(db, messageContent) {
@@ -177,7 +184,7 @@ async function addCode(db, uuid, code) {
   const res = await db.none(
     "INSERT INTO codes (code, event_id, created_date ) VALUES ( $1, $2, $3 );",
     [code, uuid, now]
-  );
+  ).catch( error => { return error });
 
   return res;
 }
@@ -214,6 +221,7 @@ module.exports = {
   saveEvent,
   isPassAvailable,
   addCode,
+  appendFile,
   getFutureActiveEvents,
   getBannedUsersById,
     v2,

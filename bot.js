@@ -39,6 +39,7 @@ const states = {
   LISTEN: "listen",
   SETUP: "setup",
   EVENT: "event",
+  REPLENISH: "replenish", // could do a more generic UPDATE (not only codes)
 };
 
 const steps = {
@@ -53,6 +54,11 @@ const steps = {
   PASS: "pass",
   FILE: "file",
 };
+
+const replenishSteps = {
+  PASS: "pass",   // select the event (a server might have multiple)
+  FILE: "file",   // the new file
+}
 
 const defaultStartMessage =
   "The POAP distribution event is now active. *DM me to get your POAP*";
@@ -96,12 +102,11 @@ client.on("message", async (message) => {
       );
 
       if (state.state === states.SETUP && state.user.id === message.author.id) {
-        logger.info(
-          `[ONMSG] state ${state.state} user ${
-            state.user ? state.user.id : "-"
-          }`
-        );
+        logger.info(`[ONMSG] state ${state.state} user ${state.user ? state.user.id : "-"}`);
         handleStepAnswer(message);
+      } else if (state.state === states.REPLENISH && state.user.id === message.author.id) {
+        logger.info(`[ONMSG] state ${state.state} user ${state.user ? state.user.id : "-"}`);
+        handleReplenishAnswer(message);
       } else {
         handlePrivateEventMessage(message);
       }
@@ -154,7 +159,7 @@ const botCommands = async (message) => {
   if (message.member.permissions.has(Discord.Permissions.FLAGS.MANAGE_GUILD) || roleAllowed) {
     // Check that user is an admin in this guild
     logger.info(`[BOT] user has permission`);
-    if (message.content.toLowerCase().includes("!setup") && state.state !== states.SETUP) {
+    if (message.content.toLowerCase().includes("!setup") && state.state === states.LISTEN) {
       // one at a time
       // Get any current record for this guild
       // start dialog in PM
@@ -172,13 +177,17 @@ const botCommands = async (message) => {
         );
         reactMessage(message, "🙌");
       }
-    } else if (message.content.includes("!instructions") || message.content.includes("!instruction")) {
+    } else if (message.content.includes("!instructions") || message.content.includes("!instruction"))
+    {
       logger.info(`[BOT] instructions request`);
 
       reactMessage(message, "🤙")
       message.reply(instructions);
+    } else if (message.content.includes("!replenish") && state.state === states.LISTEN) {
+      await setupReplenish(message.author, message.channel.guild.name);
     }
-  } else {
+  }
+  else {
     logger.info(`[BOT] user lacks permission, or invalid command`);
     // reactMessage(message, "❗");
   }
@@ -271,16 +280,7 @@ const handleStepAnswer = async (message) => {
       break;
     }
     case steps.FILE: {
-      if (message.attachments.size <= 0) {
-        state.dm.send(`No file attachment found!`);
-      } else {
-        const ma = message.attachments.first();
-        logger.info(`[STEPS] File ${ma.name} ${ma.url} ${ma.id} is attached`);
-        state.event.file_url = ma.url;
-        let total_count = await readFile(ma.url, state.event.uuid);
-        // Report number of codes added
-        state.dm.send(`DONE! codes added`);
-      }
+      await handleCodeFile(message);
       state.next = steps.NONE;
       state.dm.send(
         `Thank you. That's everything. I'll start the event at the appointed time.`
@@ -298,6 +298,35 @@ const handleStepAnswer = async (message) => {
     }
   }
 };
+
+const handleReplenishAnswer = async (message) => {
+  resetExpiry();
+  let answer = message.content;
+  switch (state.next) {
+    case replenishSteps.PASS:
+    {
+      const event = await queryHelper.getEventFromPass(db, answer);
+      if (!event)
+      {
+        //... TODO handle v2?
+        state.dm.send(`Unknown codeword, try again`);
+        return;
+      }
+      state.event = event
+      state.event.uuid = event.id
+      state.next = replenishSteps.FILE
+      state.dm.send(`Please attach your new links.txt file. It should only contain new codes!`);
+    }
+    break;
+    case replenishSteps.FILE:
+    {
+      if (await handleCodeFile(message) > 0)
+        await queryHelper.appendFile(db, state.event.uuid, state.event.file_url)
+      clearSetup();
+    }
+    break;
+  }
+}
 
 const handlePrivateEventMessage = async (message) => {
   // console.log(message);
@@ -433,6 +462,38 @@ const setupState = async (user, guild) => {
   );
   state.event.uuid = uuidv4();
   state.user = user;
+  resetExpiry();
+};
+
+const setupReplenish = async (user, guild) => {
+  logger.info(`[BOT] replenish request`);
+  const events = await queryHelper.getGuildEvents(
+      db,
+      guild
+  ); // Don't auto-create
+  if (!events) {
+    // error
+    return;
+  }
+  if (events.length === 0)
+  {
+    sendDM(user, `No active events in server ${guild}`);
+    return;
+  }
+  state.dm = await user.createDM();
+  state.state = states.REPLENISH;
+  state.user = user;
+  if (events.length > 1) {
+    state.next = replenishSteps.PASS;
+    state.dm.send(`Which codeword do you want to replenish?`);
+  }
+  else {
+    // we can skip codeword selection step if there's only one
+    state.event = events[0]
+    state.event.uuid = state.event.id
+    state.next = replenishSteps.FILE;
+    state.dm.send(`Please attach your new links.txt file. It should only contain new codes!`);
+  }
   resetExpiry();
 };
 
@@ -630,23 +691,48 @@ const loadPendingEvents = async () => {
   }
 };
 
-const readFile = async (url, uuid) => {
+
+const handleCodeFile = async (message) => {
+  if (message.attachments.size <= 0) {
+    state.dm.send(`No file attachment found!`);
+  } else {
+    const ma = message.attachments.first();
+    logger.info(`[STEPS] File ${ma.name} ${ma.url} ${ma.id} is attached`);
+    state.event.file_url = ma.url;
+    let codes = await readFile(ma.url, state.event.uuid);
+    let duplicates = []
+    for (const code of codes) {
+      let res = await queryHelper.addCode(db, state.event.uuid, code)
+      if (res != null)
+      {
+        duplicates.push(code);
+      }
+    }
+    // Report number of codes added
+    state.dm.send(`DONE! ${codes.length - duplicates.length} codes added`);
+    if (duplicates.length > 0)
+    {
+      state.dm.send(`${duplicates.length} duplicates detected`);
+    }
+    return codes.length - duplicates.length;
+  }
+}
+
+
+const readFile = async (url) => {
   return new Promise(async (resolve, reject) => {
+    let data = [];
     try {
       const res = await axios.get(url);
-      let count = 0;
-      csv
+      await csv
         .parseString(res.data, { headers: false })
         .on("data", async function (code) {
-          if (code.length) {
-            await queryHelper.addCode(db, uuid, code[0]);
-            logger.info(`-> code added: ${code}`);
-            count += 1;
-          }
+          if (code.length > 0)
+            data.push(code[0]);
         })
         .on("end", function () {
-          logger.info(`[CODES] total codes ${count}`);
-          resolve(count);
+          logger.info(`[CODES] read file`);
+          resolve(data);
         })
         .on("error", (error) => logger.error(error));
     } catch (err) {
