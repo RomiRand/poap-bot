@@ -111,10 +111,23 @@ async function checkCodeForEventUsername(db, event_id, username) {
         );
       }
 
-      await t.none(
-        "SELECT * FROM codes WHERE event_id = $1 AND username = $2::text",
-        [event_id, username]
-      );
+      try {
+          await t.none(
+              "SELECT * FROM codes WHERE event_id = $1 AND username = $2::text",
+              [event_id, username]
+          );
+      }
+      catch (e)
+      {
+          throw `You already claimed a code for that event!`;
+      }
+
+      const count = await t.one("SELECT COUNT(*) FROM codes WHERE event_id = $1 AND username IS NULL",
+          [event_id])
+      if (count.count === "0")
+      {
+          throw "No claim codes left!";
+      }
       const code = await t.one(
         "UPDATE codes SET username = $1, claimed_date = $3::timestamp WHERE code in (SELECT code FROM codes WHERE event_id = $2 AND username IS NULL ORDER BY RANDOM() LIMIT 1) RETURNING code",
         [username, event_id, now]
@@ -127,8 +140,8 @@ async function checkCodeForEventUsername(db, event_id, username) {
       return data;
     })
     .catch((error) => {
-      console.log(`[ERROR] ${error.message} -> ${error.received}`);
-      return false;
+      console.log(`[ERROR] ${error}`);
+      return error;
     });
 
   return res;

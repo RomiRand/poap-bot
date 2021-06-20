@@ -316,9 +316,9 @@ const handlePrivateEventMessage = async (message) => {
         message.author.id
       );
 
-      getCode && logger.info(`[DM] Code found: ${getCode.code}`);
+      getCode.code && logger.info(`[DM] Code found: ${getCode.code}`);
 
-      if (getCode && getCode.code) {
+      if (getCode.code) {
         logger.info(
           `[DM] OK for ${message.author.username}/${message.author.id} with code: ${getCode.code}`
         );
@@ -338,19 +338,22 @@ const handlePrivateEventMessage = async (message) => {
 
         // Send DM
         replyMessage(message, replyMsg);
-      } else {
-        reactMessage(message, "🤔");
+      }
+      else
+      {
+        replyMessage(message, getCode)
+        // reactMessage(message, "🤔");
         logger.info(
-          `[DM] ${message.author.username}/${message.author.id} already has a badge`
+          `[DM] ${message}/${message.author.id}: ${getCode}`
         );
       }
     } else {
       const codev2 = await checkPassInNewBot(message);
-      if(codev2){
+      if(codev2) {
         replyMessage(message, codev2);
-      }else{
+      } else {
         // no events
-        reactMessage(message, "❌");
+        replyMessage(message, "Unknown codeword");
       }
     }
   } else {
