@@ -285,7 +285,6 @@ const handleStepAnswer = async (message) => {
       state.dm.send(
         `Thank you. That's everything. I'll start the event at the appointed time.`
       );
-      clearTimeout(state.expiry);
       await queryHelper
         .saveEvent(db, state.event, message.author.username)
         .catch((error) => {
@@ -315,14 +314,16 @@ const handleReplenishAnswer = async (message) => {
       state.event = event
       state.event.uuid = event.id
       state.next = replenishSteps.FILE
-      state.dm.send(`Please attach your new links.txt file. It should only contain new codes!`);
     }
     break;
     case replenishSteps.FILE:
     {
-      if (await handleCodeFile(message) > 0)
+      const new_codes = await handleCodeFile(message);
+      if (new_codes > 0)
+      {
         await queryHelper.appendFile(db, state.event.uuid, state.event.file_url)
-      clearSetup();
+        clearSetup();
+      }
     }
     break;
   }
@@ -499,11 +500,11 @@ const setupReplenish = async (user, guild) => {
 
 const resetExpiry = () => {
   console.log('setting reset')
-  if (state.state != states.LISTEN) {
+  if (state.state !== states.LISTEN) {
     clearTimeout(state.expiry);
     state.expiry = setTimeout(() => {
       state.dm.send(
-        `Setup expired before answers received. Start again if you wish to complete setup.`
+          `Setup expired before answers received. Start again if you wish to complete setup.`
       );
       clearSetup();
     }, 300000);
@@ -517,6 +518,8 @@ const clearSetup = () => {
   state.event = {};
   state.user = undefined;
   state.next = steps.NONE;
+  if (state.expiry)
+    clearTimeout(state.expiry);
 };
 
 // ---------------------------------------------------------------------
@@ -713,6 +716,10 @@ const handleCodeFile = async (message) => {
     if (duplicates.length > 0)
     {
       state.dm.send(`${duplicates.length} duplicates detected`);
+    }
+    if (duplicates.length === codes.length)
+    {
+      state.dm.send(`Send another file!`);
     }
     return codes.length - duplicates.length;
   }

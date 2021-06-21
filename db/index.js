@@ -1,7 +1,7 @@
 const v2 = require("./db-v2");
 
 async function getRealtimeActiveEvents(db) {
-  const now = new Date();
+  const now = new Date().toUTCString();
 
   const res = await db.query(
     "SELECT * FROM events WHERE end_date >= $1::timestamp AND start_date <= $1::timestamp AND is_active = $2",
@@ -11,7 +11,7 @@ async function getRealtimeActiveEvents(db) {
 }
 
 async function getFutureActiveEvents(db) {
-  const now = new Date();
+  const now = new Date().toUTCString();
 
   const res = await db.query(
     "SELECT * FROM events WHERE end_date >= $1::timestamp AND is_active = $2",
@@ -28,16 +28,16 @@ async function getAllEvents(db) {
 }
 
 async function getGuildEvents(db, server) {
-  const now = new Date();
+  const now = new Date().toUTCString();
   const res = await db.any(
     "SELECT * FROM events WHERE end_date >= $1::timestamp AND server = $2::text AND is_active = $3",
-    [now.toUTCString(), server, true]
+    [now, server, true]
   );
   return res;
 }
 
 async function getGuildActiveEvents(db, server) {
-  const now = new Date();
+  const now = new Date().toUTCString();
   const res = await db.any(
     "SELECT * FROM events WHERE end_date >= $1::timestamp AND start_date <= $1::timestamp AND server = $2::text AND is_active = $3",
     [now, server, true]
@@ -100,7 +100,7 @@ async function getEventFromPass(db, messageContent) {
 }
 
 async function checkCodeForEventUsername(db, event_id, username) {
-  const now = new Date();
+  const now = new Date().toUTCString();
   const res = await db
     .task(async (t) => {
       
@@ -155,7 +155,7 @@ async function checkCodeForEventUsername(db, event_id, username) {
 }
 
 async function saveEvent(db, event, username) {
-  const now = new Date();
+  const now = new Date().toUTCString();
   console.log(event);
 
   const res = await db.none(
@@ -180,7 +180,7 @@ async function saveEvent(db, event, username) {
 }
 
 async function addCode(db, uuid, code) {
-  const now = new Date();
+  const now = new Date().toUTCString();
   const res = await db.none(
     "INSERT INTO codes (code, event_id, created_date ) VALUES ( $1, $2, $3 );",
     [code, uuid, now]
