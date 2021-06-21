@@ -27,6 +27,16 @@ async function getAllEvents(db) {
   return res;
 }
 
+async function getAllGuildEvents(db, server)
+{
+    const res = await db.any(
+        "SELECT * FROM events WHERE server = $1::text AND is_active = $2",
+        [server, true]
+    );
+
+    return res;
+}
+
 async function getGuildEvents(db, server) {
   const now = new Date().toUTCString();
   const res = await db.any(
@@ -82,6 +92,23 @@ async function appendFile(db, event_id, url) {
     );
 
     return res;
+}
+
+// basically same as the next, but without the time-filter - TODO can we merge those?
+async function getAnyEventByCode(db, code)
+{
+    const events = await getAllEvents(db);
+    // check for similar strings on active events pass
+
+    const eventSelected = events.find((e) =>
+        isMsgTheSame(code, e.pass)
+    );
+
+    console.log(
+        `[DB] ${eventSelected && eventSelected.length} for pass: ${code}`
+    );
+
+    return eventSelected;
 }
 
 async function getEventFromPass(db, messageContent) {
@@ -154,6 +181,26 @@ async function checkCodeForEventUsername(db, event_id, username) {
   return res;
 }
 
+async function updateEvent(db, event) {
+    console.log(event);
+
+    const res = await db.none(
+        "UPDATE events SET channel = $1, start_date = $2::timestamp, end_date = $3::timestamp, response_message = $4, pass = $5, file_url = $6 WHERE id = $7",
+        [
+            event.channel,
+            event.start_date,
+            event.end_date,
+            event.response_message,
+            event.pass,
+            event.file_url,
+            event.uuid,
+        ]
+    );
+    console.log(res);
+
+    return res;
+}
+
 async function saveEvent(db, event, username) {
   const now = new Date().toUTCString();
   console.log(event);
@@ -214,14 +261,16 @@ const isMsgTheSame = (message, eventPass) => {
 module.exports = {
   getRealtimeActiveEvents,
   getEventFromPass,
+  getAnyEventByCode,
   checkCodeForEventUsername,
   getGuildEvents,
+  getAllGuildEvents,
   countTotalCodes,
   countClaimedCodes,
   saveEvent,
+  updateEvent,
   isPassAvailable,
   addCode,
-  appendFile,
   getFutureActiveEvents,
   getBannedUsersById,
     v2,

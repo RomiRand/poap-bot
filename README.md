@@ -42,7 +42,7 @@ The bot will offer a default value for each parameter.
 ### Other commands
 Similar to the `!setup` command, you can also use these commands by mentioning the bot in a text channel:
 - `!status` sends you detailed information about all the events created in your server
-- `!replenish` allows you to add additional claim codes by uploading a new `links.txt` file
+- `!update` allows you to modify the parameters of your distribution event
 
 ### Example POAP Event
 

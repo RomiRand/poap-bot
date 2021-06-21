@@ -39,11 +39,12 @@ const states = {
   LISTEN: "listen",
   SETUP: "setup",
   EVENT: "event",
-  REPLENISH: "replenish", // could do a more generic UPDATE (not only codes)
+  UPDATE: "update", // could do a more generic UPDATE (not only codes)
 };
 
 const steps = {
   NONE: "none",
+  SELECT: "select",
   CHANNEL: "channel",
   START: "start",
   END: "end",
@@ -54,11 +55,6 @@ const steps = {
   PASS: "pass",
   FILE: "file",
 };
-
-const replenishSteps = {
-  PASS: "pass",   // select the event (a server might have multiple)
-  FILE: "file",   // the new file
-}
 
 const defaultStartMessage =
   "The POAP distribution event is now active. *DM me to get your POAP*";
@@ -76,6 +72,9 @@ var state = {
 };
 
 var guildEvents = new Map();
+
+var start_timeouts = new Map();
+var end_timeouts = new Map();
 
 const client = new Discord.Client();
 
@@ -101,17 +100,14 @@ client.on("message", async (message) => {
         `[MSG] DM ${message.channel.type} - ${message.content} from ${message.author.username}`
       );
 
-      if (state.state === states.SETUP && state.user.id === message.author.id) {
+      if ((state.state === states.SETUP || state.state === states.UPDATE) && state.user.id === message.author.id) {
         logger.info(`[ONMSG] state ${state.state} user ${state.user ? state.user.id : "-"}`);
-        handleStepAnswer(message);
-      } else if (state.state === states.REPLENISH && state.user.id === message.author.id) {
-        logger.info(`[ONMSG] state ${state.state} user ${state.user ? state.user.id : "-"}`);
-        handleReplenishAnswer(message);
+        await handleStepAnswer(message);
       } else {
-        handlePrivateEventMessage(message);
+        await handlePrivateEventMessage(message);
       }
     } else {
-      handlePublicMessage(message);
+      await handlePublicMessage(message);
     }
   }
 });
@@ -183,8 +179,8 @@ const botCommands = async (message) => {
 
       reactMessage(message, "🤙")
       message.reply(instructions);
-    } else if (message.content.includes("!replenish") && state.state === states.LISTEN) {
-      await setupReplenish(message.author, message.channel.guild.name);
+    } else if (message.content.includes("!update") && state.state === states.LISTEN) {
+      await setupUpdate(message.author, message.channel.guild.name);
     }
   }
   else {
@@ -197,6 +193,24 @@ const handleStepAnswer = async (message) => {
   resetExpiry();
   let answer = message.content;
   switch (state.next) {
+    case steps.SELECT: {
+      const event = await queryHelper.getAnyEventByCode(db, answer);
+      if (!event)
+      {
+        //... TODO handle v2?
+        state.dm.send(`Unknown codeword, try again`);
+        return;
+      }
+      state.event = event
+      state.event.uuid = event.id
+      state.next = steps.CHANNEL
+      state.dm.send(
+          `First: which channel should I speak in public? (${
+              state.event.channel || ""
+          }) *Hint: only for start and end event`
+      );
+    }
+    break;
     case steps.CHANNEL: {
       logger.info(`[STEPS] answer ${state.event.id}`);
       if (answer === "-") answer = state.event.channel;
@@ -211,27 +225,31 @@ const handleStepAnswer = async (message) => {
       } else {
         state.event.channel = answer;
         state.next = steps.START;
+
         state.dm.send(
-          `Date and time to START 🛫 ? *Hint: Time in UTC this format 👉  yyyy-mm-dd hh:mm`
+          `Date and time to START 🛫 ? *Hint: Time in UTC this format 👉  yyyy-mm-dd hh:mm (` +
+          `${state.event.start_date && moment(state.event.start_date).format("YYYY-MM-DD HH:mm") || 
+          moment().utc().format("YYYY-MM-DD HH:mm")})`
         );
       }
       break;
     }
     case steps.START: {
       // TODO vali-date validate date :p
-      if (answer === "-") answer = state.event.start_date;
+      if (answer === "-") answer = state.event.start_date || moment.utc();
       if(!moment(answer).isValid()){
         state.dm.send(
           `mmmm ${answer} It's a valid date? Try again 🙏`
         );
       } else {
-        state.event.start_date = answer;
+        state.event.start_date = moment.utc(answer);
         state.next = steps.END;
         state.dm.send(
           `Date and time to END 🛬  the event? (${
-            (moment(state.event.start_date).isValid() && moment(state.event.start_date)
+            state.event.end_date && moment(state.event.end_date).format("YYYY-MM-DD HH:mm") ||
+            (state.event.start_date.isValid() && moment.utc(state.event.start_date) // need to create a copy here, we don't want to modify the start!
               .add(1, "h")
-              .format("YYYY-MM-DD HH:mm")) || ""
+              .format("YYYY-MM-DD HH:mm"))
           })`
         );
       }
@@ -239,11 +257,12 @@ const handleStepAnswer = async (message) => {
     }
     case steps.END: {
       if (answer === "-")
-        answer = moment(state.event.start_date)
+        answer = state.event.end_date ||
+          moment.utc(state.event.start_date)
           .add(1, "h")
           .format("YYYY-MM-DD HH:mm");
       
-      state.event.end_date = answer;
+      state.event.end_date = moment.utc(answer);
       state.next = steps.RESPONSE;
       state.dm.send(
         `Response to send privately to members during the event? (${
@@ -252,44 +271,59 @@ const handleStepAnswer = async (message) => {
       );
       break;
     }
-
     case steps.RESPONSE: {
       if (answer === "-")
         answer = state.event.response_message || defaultResponseMessage;
       state.event.response_message = answer;
       state.next = steps.PASS;
       state.dm.send(
-        `Choose secret 🔒  pass (like a word, a hash from youtube or a complete link). This pass is for your users.`
+        `Choose secret 🔒 pass (like a word, a hash from youtube or a complete link). This pass is for your users.` +
+        `${state.event.pass && " (" + state.event.pass + ")" || ""}`
       );
       break;
     }
-
     case steps.PASS: {
-      const passAvailable = await queryHelper.isPassAvailable(db, answer);
-      console.log(passAvailable);
-      if (!passAvailable) {
-        state.dm.send(`Please choose another secret pass. Try again 🙏 `);
-      } else {
-        state.event.pass = answer;
-        //const emoji = getEmoji(state.event.server, answer);
-        logger.info(`[STEPS] pass to get the POAP ${answer}`);
-
-        state.next = steps.FILE;
-        state.dm.send(`Please attach your links.txt file`);
+      if (answer === "-")
+        answer = state.event.pass;
+      else {
+        const passAvailable = await queryHelper.isPassAvailable(db, answer);
+        console.log(passAvailable);
+        if (!passAvailable) {
+          state.dm.send(`Please choose another secret pass. Try again 🙏 `);
+          return;
+        }
       }
+      state.event.pass = answer;
+      //const emoji = getEmoji(state.event.server, answer);
+      logger.info(`[STEPS] pass to get the POAP ${answer}`);
+
+      state.next = steps.FILE;
+      state.dm.send(`Please attach your links.txt file${state.event.file_url && " (" + state.event.file_url + ")" || ""}`);
       break;
     }
     case steps.FILE: {
-      await handleCodeFile(message);
+      if (answer !== "-") {
+        await handleCodeFile(message);
+      }
       state.next = steps.NONE;
       state.dm.send(
         `Thank you. That's everything. I'll start the event at the appointed time.`
       );
-      await queryHelper
-        .saveEvent(db, state.event, message.author.username)
-        .catch((error) => {
-          console.log(error);
-        });
+      if (state.state === states.SETUP) {
+        await queryHelper
+            .saveEvent(db, state.event, message.author.username)
+            .catch((error) => {
+              console.log(error);
+            });
+      }
+      else if (state.state === states.UPDATE)
+      {
+        await queryHelper
+            .updateEvent(db, state.event)
+            .catch((error) => {
+              console.log(error);
+            });
+      }
       // Set timer for event start
       startEventTimer(state.event);
       clearSetup();
@@ -297,37 +331,6 @@ const handleStepAnswer = async (message) => {
     }
   }
 };
-
-const handleReplenishAnswer = async (message) => {
-  resetExpiry();
-  let answer = message.content;
-  switch (state.next) {
-    case replenishSteps.PASS:
-    {
-      const event = await queryHelper.getEventFromPass(db, answer);
-      if (!event)
-      {
-        //... TODO handle v2?
-        state.dm.send(`Unknown codeword, try again`);
-        return;
-      }
-      state.event = event
-      state.event.uuid = event.id
-      state.next = replenishSteps.FILE
-    }
-    break;
-    case replenishSteps.FILE:
-    {
-      const new_codes = await handleCodeFile(message);
-      if (new_codes > 0)
-      {
-        await queryHelper.appendFile(db, state.event.uuid, state.event.file_url)
-        clearSetup();
-      }
-    }
-    break;
-  }
-}
 
 const handlePrivateEventMessage = async (message) => {
   // console.log(message);
@@ -466,34 +469,44 @@ const setupState = async (user, guild) => {
   resetExpiry();
 };
 
-const setupReplenish = async (user, guild) => {
-  logger.info(`[BOT] replenish request`);
-  const events = await queryHelper.getGuildEvents(
+const setupUpdate = async (user, guild) => {
+  logger.info(`[BOT] update request`);
+  const events = await queryHelper.getAllGuildEvents(
       db,
       guild
-  ); // Don't auto-create
+  );
   if (!events) {
     // error
+    logger.info(`[BOT] error getting events for guild ${guild}`)
     return;
   }
   if (events.length === 0)
   {
-    sendDM(user, `No active events in server ${guild}`);
+    sendDM(user, `No events in server ${guild}`);
     return;
   }
   state.dm = await user.createDM();
-  state.state = states.REPLENISH;
+  state.state = states.UPDATE;
   state.user = user;
+  state.dm.send(`Okay, let's update your event! I'll take you through the same dialog you already know and love.` +
+      ` On each step you can enter '-' to keep your old setting.`);
   if (events.length > 1) {
-    state.next = replenishSteps.PASS;
-    state.dm.send(`Which codeword do you want to replenish?`);
+    state.next = steps.SELECT;
+    let event_codes = [];
+    events.forEach(async (event) => {event_codes.push(event["pass"])});
+    state.dm.send(`Which event do you want to update? Enter the corresponding codeword (\`${event_codes.join("\`, \`")}\`)`);
   }
   else {
     // we can skip codeword selection step if there's only one
     state.event = events[0]
     state.event.uuid = state.event.id
-    state.next = replenishSteps.FILE;
-    state.dm.send(`Please attach your new links.txt file. It should only contain new codes!`);
+    state.next = steps.CHANNEL;
+    // state.dm.send(`Please attach your new links.txt file. It should only contain new codes!`);
+    state.dm.send(
+        `First: which channel should I speak in public? (${
+            state.event.channel || ""
+        }) *Hint: only for start and end event`
+    );
   }
   resetExpiry();
 };
@@ -503,9 +516,15 @@ const resetExpiry = () => {
   if (state.state !== states.LISTEN) {
     clearTimeout(state.expiry);
     state.expiry = setTimeout(() => {
-      state.dm.send(
-          `Setup expired before answers received. Start again if you wish to complete setup.`
-      );
+      if (!state.dm)
+      {
+        console.log("error");
+      }
+      else {
+        state.dm.send(
+            `Setup expired before answers received. Start again if you wish to complete setup.`
+        );
+      }
       clearSetup();
     }, 300000);
   }
@@ -535,11 +554,17 @@ const startEventTimer = (event) => {
       } secs`
     );
     // set timeout. Call startEvent on timeout
-    state.eventTimer = setTimeout((ev) => startEvent(ev), millisecs, event);
+    if (start_timeouts.has(event.uuid)) {
+      clearTimeout(start_timeouts.get(event.uuid));
+      logger.info("Replacing start event for " + event.pass);
+      start_timeouts.delete(event.uuid);
+    }
+    start_timeouts.set(event.uuid, setTimeout((ev) => startEvent(ev), millisecs, event));
   }
 };
 
 const startEvent = async (event) => {
+  start_timeouts.delete(event.uuid);
   logger.info(`[EVENT] started: ${JSON.stringify(event.server)}`);
   // Send the start message to the channel
   sendMessageToChannel(event.server, event.channel, defaultStartMessage);
@@ -547,14 +572,21 @@ const startEvent = async (event) => {
   // Set timer for event end
   const millisecs = getMillisecsUntil(event.end_date);
   logger.info(`[EVENT] ending in ${millisecs / 1000} secs`);
-  state.endEventTimer = setTimeout((ev) => endEvent(ev), millisecs, event);
+  if (end_timeouts.has(event.uuid)) {
+    clearTimeout(end_timeouts.get(event.uuid));
+    logger.info("Replacing end event for " + event.pass);
+    end_timeouts.delete(event.uuid);
+  }
+  end_timeouts.set(event.uuid, setTimeout((ev) => endEvent(ev), millisecs, event));
 };
 
 const getMillisecsUntil = (time) => {
-  return Date.parse(time) - new Date();
+  // return Date.parse(time) - new Date();
+  return moment.utc(time).diff(moment.utc());
 };
 
 const endEvent = async (event) => {
+  end_timeouts.delete(event.uuid);
   logger.info(`[EVENT] ended: ${JSON.stringify(event)}`);
   state.state = states.LISTEN;
   // send the event end message
@@ -580,8 +612,8 @@ const formattedEvent = async (event) => {
 
   return `Event in guild: ${event.server}
     Channel: ${event.channel}
-    Start: ${event.start_date}
-    End: ${event.end_date}
+    Start: ${moment.utc(event.start_date)}
+    End: ${moment.utc(event.end_date)}
     Event start message: ${defaultStartMessage}
     Event end message: ${defaultEndMessage}
     Response to member messages: ${event.response_message}
@@ -673,6 +705,7 @@ const reactMessage = async (message, reaction) => {
 
 const loadPendingEvents = async () => {
   // read all events that will start or end in the future.
+  // TODO add end-timers for already started events
   try {
     let res = await queryHelper.getFutureActiveEvents(db);
     // console.log(res)
@@ -701,7 +734,10 @@ const handleCodeFile = async (message) => {
   } else {
     const ma = message.attachments.first();
     logger.info(`[STEPS] File ${ma.name} ${ma.url} ${ma.id} is attached`);
-    state.event.file_url = ma.url;
+    if (state.event.file_url)
+      state.event.file_url += ", " + ma.url;
+    else
+      state.event.file_url = ma.url;
     let codes = await readFile(ma.url, state.event.uuid);
     let duplicates = []
     for (const code of codes) {
