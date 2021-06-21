@@ -39,6 +39,11 @@ Some aspects of a POAP distribution event are customisable, specifically:
 
 The bot will offer a default value for each parameter.
 
+### Other commands
+Similar to the `!setup` command, you can also use these commands by mentioning the bot in a text channel:
+- `!status` sends you detailed information about all the events created in your server
+- `!replenish` allows you to add additional claim codes by uploading a new `links.txt` file
+
 ### Example POAP Event
 
 ![POAP-bot example](https://res.cloudinary.com/dbiqkiypz/image/upload/v1615833420/Screen_Shot_2021-03-15_at_15.35.22_iggkoj.png)
